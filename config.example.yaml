@@ -1,0 +1,19 @@
+# 阿里云配置
+aliyun:
+  access_key_id: "xxxx"
+  access_key_secret: "xxxx"
+  region: "cn-hangzhou"  # 阿里云区域
+
+# 证书配置列表
+certificates:
+  - domain: "xxxcom"  # 域名
+
+# 定时任务配置
+schedule:
+  expire_threshold_days: 5  # 证书过期阈值（天数），小于等于此天数将自动续期
+
+# 日志配置
+logging:
+  level: "DEBUG"  # DEBUG, INFO, WARNING, ERROR
+  file: "cert_manager.log"
+
