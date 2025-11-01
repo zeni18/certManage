@@ -5,7 +5,7 @@ resources:
   fcDemo:
     component: fc3
     props:
-      region: cn-hangzhou
+      region: cn-hongkong
       handler: auto_renew.main
       role: ''
       disableOndemand: false
@@ -23,7 +23,7 @@ resources:
         enableRequestMetrics: true
         enableInstanceMetrics: true
         logBeginRule: DefaultRegex
-        project: serverless-cn-hangzhou-7b957d68-9a71-5342-aaf8-eb29eb49db55
+        project: serverless-cn-hongkong-7b957d68-9a71-5342-aaf8-eb29eb49db55
         enableCustomExtraLog: true
         logstore: default-logs
       functionName: certManage

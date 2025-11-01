@@ -449,7 +449,7 @@ def upload_cert_to_aliyun(config, domain, cert_content, key_content, cert_name=N
     
     # 构建请求参数（参考 API 文档）
     params = {
-        'Name': cert_name or domain,
+        'Name': domain.replace('.', '_'),
         'Cert': cert_content,
         'Key': key_content,
     }
@@ -464,7 +464,7 @@ def upload_cert_to_aliyun(config, domain, cert_content, key_content, cert_name=N
     else:
         logger.error(f"上传证书失败: {result}")
         return False
-def main(event, context):
+def main(event=None, context=None):
     """主函数"""
     logger.info("开始证书自动续期流程...")
     
@@ -542,9 +542,10 @@ def main(event, context):
             upload_cert_to_aliyun(config, domain, cert_content, key_content, cert_name=domain)
             
             # shell 执行 deploy_cert.py 脚本，部署证书到阿里云
-            subprocess.run(['python', 'deploy_cert.py', '-d', domain])
+            result = subprocess.run(['python', 'deploy_cert.py', '-d', domain], 
+                                  capture_output=True, text=True)
             if result.returncode != 0:
-                logger.error(f"部署证书失败: {domain}")
+                logger.error(f"部署证书失败: {domain}, 错误: {result.stderr}")
                 continue
             else:
                 logger.info(f"部署证书成功: {domain}")
