@@ -230,12 +230,12 @@ def deploy_cert_to_fc(config, domain, cert_content, key_content, target=None):
 
     fc_domain = target.get('domain') or target.get('custom_domain') or domain
     preferred_region = infer_fc_region(config, target)
-    region = target.get('region') or discover_fc_domain_region(
+    region = discover_fc_domain_region(
         config,
         account_id,
         fc_domain,
         preferred_region=preferred_region
-    ) or preferred_region
+    ) or target.get('region') or preferred_region
 
     path_domain = urllib.parse.quote(fc_domain, safe='*.')
     path = f'/2016-08-15/custom-domains/{path_domain}'
