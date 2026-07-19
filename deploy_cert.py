@@ -174,9 +174,7 @@ def create_deployment_job(config, cert_id, resource_id, cloud_product, domain, j
     if not job_name:
         safe_domain = domain.replace('.', '_')  # 将点号替换为下划线
         job_name = f'Deploy_{safe_domain}_{cloud_product}'
-    
-    print(job_name)
-    exit()
+        
     # 构建部署任务参数（所有产品的参数都一样）
     params = {
         'Name': job_name,
