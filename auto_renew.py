@@ -10,7 +10,6 @@ import sys
 import subprocess
 import yaml
 import logging
-import json
 import hmac
 import base64
 import hashlib
@@ -37,6 +36,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def parse_bool(value, default=False):
+    """解析环境变量中的布尔值。"""
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def load_config():
     """
     加载配置：优先使用环境变量，如果环境变量不存在则读取配置文件
@@ -49,11 +55,21 @@ def load_config():
     - CERT_EXPIRE_THRESHOLD_DAYS: 证书过期阈值天数（默认：30）
     """
     config = {}
+    config_path = Path(__file__).parent / 'config.yaml'
+    file_config = {}
+
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                file_config = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.warning(f"读取配置文件失败: {e}")
     
     # 从环境变量读取阿里云配置
     aliyun_access_key_id = os.getenv('ALIYUN_ACCESS_KEY_ID')
     aliyun_access_key_secret = os.getenv('ALIYUN_ACCESS_KEY_SECRET')
     aliyun_region = os.getenv('ALIYUN_REGION', 'cn-hangzhou')
+    aliyun_account_id = os.getenv('ALIYUN_ACCOUNT_ID')
     
     if aliyun_access_key_id and aliyun_access_key_secret:
         # 如果环境变量存在，使用环境变量
@@ -62,19 +78,14 @@ def load_config():
             'access_key_secret': aliyun_access_key_secret,
             'region': aliyun_region
         }
+        if aliyun_account_id:
+            config['aliyun']['account_id'] = aliyun_account_id
         logger.info("从环境变量加载阿里云配置")
     else:
         # 否则尝试从配置文件读取
-        config_path = Path(__file__).parent / 'config.yaml'
-        if config_path.exists():
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    file_config = yaml.safe_load(f)
-                    config['aliyun'] = file_config.get('aliyun', {})
-                    logger.info("从配置文件加载阿里云配置")
-            except Exception as e:
-                logger.error(f"读取配置文件失败: {e}")
-                config['aliyun'] = {}
+        if file_config:
+            config['aliyun'] = file_config.get('aliyun', {})
+            logger.info("从配置文件加载阿里云配置")
         else:
             config['aliyun'] = {}
     
@@ -90,16 +101,9 @@ def load_config():
         logger.info(f"从环境变量加载域名列表: {domains}")
     else:
         # 否则从配置文件读取
-        config_path = Path(__file__).parent / 'config.yaml'
-        if config_path.exists():
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    file_config = yaml.safe_load(f)
-                    config['certificates'] = file_config.get('certificates', [])
-                    logger.info("从配置文件加载域名列表")
-            except Exception as e:
-                logger.warning(f"读取域名配置失败: {e}")
-                config['certificates'] = []
+        if file_config:
+            config['certificates'] = file_config.get('certificates', [])
+            logger.info("从配置文件加载域名列表")
         else:
             config['certificates'] = []
     
@@ -118,16 +122,24 @@ def load_config():
             config['schedule'] = {'expire_threshold_days': 30}
     else:
         # 从配置文件读取
-        config_path = Path(__file__).parent / 'config.yaml'
-        if config_path.exists():
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    file_config = yaml.safe_load(f)
-                    config['schedule'] = file_config.get('schedule', {'expire_threshold_days': 30})
-            except Exception:
-                config['schedule'] = {'expire_threshold_days': 30}
+        if file_config:
+            config['schedule'] = file_config.get('schedule', {'expire_threshold_days': 30})
         else:
             config['schedule'] = {'expire_threshold_days': 30}
+
+    # 函数计算直连部署配置
+    fc_config = {}
+    if file_config:
+        fc_config.update(file_config.get('fc', {}) or {})
+
+    if os.getenv('FC_ENABLED') is not None:
+        fc_config['enabled'] = parse_bool(os.getenv('FC_ENABLED'))
+    if os.getenv('FC_ACCOUNT_ID'):
+        fc_config['account_id'] = os.getenv('FC_ACCOUNT_ID')
+    if os.getenv('FC_REGION'):
+        fc_config['region'] = os.getenv('FC_REGION')
+
+    config['fc'] = fc_config
     
     return config
 
@@ -214,6 +226,67 @@ def call_aliyun_api(action, config, params=None, method='GET'):
         if hasattr(e, 'response') and e.response is not None:
             logger.error(f"响应内容: {e.response.text}")
         return None
+
+
+def call_rpc_api(endpoint, version, action, config, params=None, method='POST'):
+    """调用阿里云 RPC 风格 OpenAPI。"""
+    aliyun = config['aliyun']
+    access_key_id = aliyun['access_key_id']
+    access_key_secret = aliyun['access_key_secret']
+    region = aliyun.get('region', 'cn-hangzhou')
+
+    common_params = {
+        'Format': 'JSON',
+        'Version': version,
+        'AccessKeyId': access_key_id,
+        'SignatureMethod': 'HMAC-SHA1',
+        'Timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'SignatureVersion': '1.0',
+        'SignatureNonce': os.urandom(16).hex(),
+        'Action': action,
+        'RegionId': region,
+    }
+
+    security_token = aliyun.get('security_token') or os.getenv('ALIYUN_SECURITY_TOKEN')
+    if security_token:
+        common_params['SecurityToken'] = security_token
+
+    if params:
+        common_params.update(params)
+
+    common_params['Signature'] = sign_aliyun_request(access_key_secret, common_params, method)
+
+    try:
+        if method == 'GET':
+            response = requests.get(endpoint, params=common_params, timeout=30)
+        else:
+            response = requests.post(endpoint, data=common_params, timeout=30)
+
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"调用阿里云 RPC API 失败 ({action}): {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"响应内容: {e.response.text}")
+        return None
+
+
+def get_aliyun_account_id(config):
+    """获取阿里云账号 ID，优先配置，缺失时通过 STS 查询。"""
+    aliyun = config.get('aliyun', {})
+    account_id = aliyun.get('account_id') or os.getenv('ALIYUN_ACCOUNT_ID')
+    if account_id:
+        return str(account_id)
+
+    result = call_rpc_api('https://sts.aliyuncs.com/', '2015-04-01', 'GetCallerIdentity', config)
+    if result and result.get('AccountId'):
+        account_id = str(result['AccountId'])
+        config['aliyun']['account_id'] = account_id
+        logger.info(f"已通过 STS 获取阿里云账号 ID: {account_id}")
+        return account_id
+
+    logger.error("缺少阿里云账号 ID，请配置 aliyun.account_id 或环境变量 ALIYUN_ACCOUNT_ID")
+    return None
 
 
 def list_aliyun_certificates(config):
@@ -464,6 +537,76 @@ def upload_cert_to_aliyun(config, domain, cert_content, key_content, cert_name=N
     else:
         logger.error(f"上传证书失败: {result}")
         return False
+
+
+def get_uploaded_cert_content(config, domain):
+    """从阿里云已上传证书中获取证书内容和私钥。"""
+    logger.info(f"正在从阿里云证书服务获取证书内容: {domain}")
+    certificates = list_aliyun_certificates(config)
+    cert = find_cert_by_domain(certificates, domain)
+    if not cert:
+        logger.error(f"阿里云证书服务中未找到域名证书: {domain}")
+        return None, None
+
+    cert_id = cert.get('CertificateId') or cert.get('CertId') or cert.get('Id')
+    if not cert_id:
+        logger.error(f"证书未找到证书ID: {domain}")
+        return None, None
+
+    result = call_aliyun_api(
+        'GetUserCertificateDetail',
+        config,
+        {
+            'CertId': str(cert_id),
+            'CertFilter': 'false',
+        },
+        method='POST'
+    )
+    if not result:
+        logger.error(f"获取证书详情失败: {domain}")
+        return None, None
+
+    cert_content = result.get('Cert') or result.get('Certificate')
+    key_content = result.get('Key') or result.get('PrivateKey')
+    if not cert_content or not key_content:
+        logger.error(f"证书详情中缺少 Cert/Key 内容: {domain}")
+        return None, None
+
+    return cert_content, key_content
+
+
+def call_update_script(script_name, domain):
+    """调用单独的云产品证书更新脚本。"""
+    script_path = Path(__file__).parent / script_name
+    if not script_path.exists():
+        logger.warning(f"更新脚本不存在，跳过: {script_name}")
+        return False
+
+    result = subprocess.run(
+        [sys.executable, str(script_path), '-d', domain],
+        capture_output=True,
+        text=True
+    )
+    if result.stdout:
+        logger.info(result.stdout.strip())
+    if result.stderr:
+        logger.warning(result.stderr.strip())
+
+    if result.returncode == 0:
+        logger.info(f"{script_name} 执行成功: {domain}")
+        return True
+
+    logger.warning(f"{script_name} 执行失败或未找到匹配资源: {domain}")
+    return False
+
+
+def update_cloud_product_certs(domain):
+    """续期后调用各产品自己的证书更新入口。"""
+    call_update_script('fc_update_cert.py', domain)
+    call_update_script('oss_update_cert.py', domain)
+    call_update_script('cdn_update_cert.py', domain)
+
+
 def main(event=None, context=None):
     """主函数"""
     logger.info("开始证书自动续期流程...")
@@ -539,16 +682,10 @@ def main(event=None, context=None):
                 continue
             
             # 上传到阿里云
-            upload_cert_to_aliyun(config, domain, cert_content, key_content, cert_name=domain)
-            
-            # shell 执行 deploy_cert.py 脚本，部署证书到阿里云
-            result = subprocess.run(['python', 'deploy_cert.py', '-d', domain], 
-                                  capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"部署证书失败: {domain}, 错误: {result.stderr}")
+            if not upload_cert_to_aliyun(config, domain, cert_content, key_content, cert_name=domain):
                 continue
-            else:
-                logger.info(f"部署证书成功: {domain}")
+
+            update_cloud_product_certs(domain)
     
     logger.info("证书自动续期流程完成")
 
