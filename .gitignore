@@ -51,7 +51,7 @@ certs/
 
 # acme.sh 运行时数据
 .acme.sh/
-acme.sh
+# acme.sh
 
 # 阿里云函数计算部署相关
 .aliyun/
